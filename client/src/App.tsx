@@ -1,5 +1,12 @@
 import { useState } from 'react';
 import AppShell from './components/AppShell';
+import FloatingToolbar, {
+  ToolbarArrowLeftIcon,
+  ToolbarArrowRightIcon,
+  ToolbarDocumentIcon,
+  ToolbarOutlineIcon,
+} from './components/FloatingToolbar';
+import type { FloatingToolbarGroup } from './components/FloatingToolbar';
 import BidDuplicateCheck from './pages/BidDuplicateCheck';
 import KnowledgeBase from './pages/KnowledgeBase';
 import RejectionCheck from './pages/RejectionCheck';
@@ -7,28 +14,62 @@ import TechnicalPlan from './pages/TechnicalPlan';
 
 export type SectionId = 'technical-plan' | 'knowledge-base' | 'duplicate-check' | 'rejection-check';
 
-const sectionMeta: Record<SectionId, { title: string; subtitle: string }> = {
-  'technical-plan': {
-    title: '技术方案',
-    subtitle: '围绕招标要求完成技术方案生成、审阅与交付。',
-  },
-  'knowledge-base': {
-    title: '知识库',
-    subtitle: '沉淀企业能力、案例素材、标准章节和行业模板。',
-  },
-  'duplicate-check': {
-    title: '标书查重',
-    subtitle: '比对标书内容相似度，降低重复表达和合规风险。',
-  },
-  'rejection-check': {
-    title: '废标项检查',
-    subtitle: '聚焦硬性条款、格式要求和响应完整性。',
-  },
-};
+const sectionOrder: SectionId[] = ['technical-plan', 'knowledge-base', 'duplicate-check', 'rejection-check'];
 
 function App() {
   const [activeSection, setActiveSection] = useState<SectionId>('technical-plan');
-  const current = sectionMeta[activeSection];
+  const activeIndex = sectionOrder.indexOf(activeSection);
+
+  const goToSection = (offset: number) => {
+    const nextSection = sectionOrder[activeIndex + offset];
+    if (nextSection) {
+      setActiveSection(nextSection);
+    }
+  };
+
+  const toolbarGroups: FloatingToolbarGroup[] = [
+    {
+      id: 'page-navigation',
+      actions: [
+        {
+          id: 'previous',
+          label: '上一步',
+          icon: <ToolbarArrowLeftIcon />,
+          disabled: activeIndex <= 0,
+          tooltip: activeIndex <= 0 ? '当前已经是第一个页面' : '切换到上一个页面',
+          onClick: () => goToSection(-1),
+        },
+        {
+          id: 'next',
+          label: '下一步',
+          icon: <ToolbarArrowRightIcon />,
+          disabled: activeIndex >= sectionOrder.length - 1,
+          tooltip: activeIndex >= sectionOrder.length - 1 ? '当前已经是最后一个页面' : '切换到下一个页面',
+          onClick: () => goToSection(1),
+        },
+      ],
+    },
+    {
+      id: 'technical-flow',
+      actions: [
+        {
+          id: 'document-analysis',
+          label: '标书解析',
+          icon: <ToolbarDocumentIcon />,
+          variant: activeSection === 'technical-plan' ? 'primary' : 'secondary',
+          tooltip: '进入标书解析流程',
+          onClick: () => setActiveSection('technical-plan'),
+        },
+        {
+          id: 'outline-edit',
+          label: '目录编辑',
+          icon: <ToolbarOutlineIcon />,
+          tooltip: '预留目录编辑入口，后续页面接入后可替换动作',
+          onClick: () => setActiveSection('technical-plan'),
+        },
+      ],
+    },
+  ];
 
   const renderPage = () => {
     switch (activeSection) {
@@ -48,8 +89,7 @@ function App() {
   return (
     <AppShell
       activeSection={activeSection}
-      title={current.title}
-      subtitle={current.subtitle}
+      toolbar={<FloatingToolbar groups={toolbarGroups} />}
       onSectionChange={setActiveSection}
     >
       {renderPage()}
