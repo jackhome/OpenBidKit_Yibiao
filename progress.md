@@ -24,3 +24,5 @@
 - 已完成 GitHub Release 自动打包与更新检查：安装 `electron-builder` / `electron-updater`；补齐 `client/package.json` 打包配置；新增 `.github/workflows/release.yml`；新增 `updateService.cjs` 并接入主进程；更新开发说明；`npm run build`、`npm audit`、`updateService` 模块加载、Windows unpacked 和 NSIS 打包验证通过。
 - 已修复首次远程发布验证问题：`v2.0.1` Actions 成功但 Release 无产物，是因为正式 Release 与 electron-builder 默认 draft 发布类型冲突；workflow 已改为构建后用 `gh release upload --clobber` 显式上传，同时 Release notes 改为基于 `git log` 生成，并支持手动输入已有 tag 重新发布。
 - 已修复 Actions `Build renderer` 的 `TS2688: Cannot find type definition file for 'plist'`：新增 `@types/plist` devDependency，并在 workflow 中补装该类型包以兼容手动重跑旧 tag；`npm run build` 和 `npm audit` 通过。
+- 已确认用户此前点击的是旧 run 的 `Re-run all jobs`，不会使用 main 上修复后的 workflow；已通过 `gh workflow run release.yml --ref main -f tag_name=v2.0.1` 触发最新 workflow，`v2.0.1` Release 已成功上传 13 个构建资产并更新提交列表说明。
+- 已排查 Windows 安装包“无响应”：下载文件完整且可解包，本地启动后安装器进程有响应窗口；同时已将后续构建产物命名修正为 `Yibiao-版本-平台-架构.ext`，本地 NSIS 构建验证通过。

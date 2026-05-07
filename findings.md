@@ -29,3 +29,6 @@
 - v2.0.1 Release 空产物根因：workflow 先用 `gh release create` 创建了正式 Release，但 `electron-builder --publish always` 默认以 draft 发布类型工作，日志显示 `existingType=release publishingType=draft`，因此所有安装包、blockmap 和 `latest*.yml` 都被跳过上传。
 - v2.0.1 Release 说明只有 `Full Changelog` 根因：GitHub `--generate-notes` 在没有可识别 PR/分组内容时只生成比较链接；改为 workflow 内显式用 `git log` 生成提交列表更可控。
 - Actions `Build renderer` 报 `TS2688: Cannot find type definition file for 'plist'`：干净 CI 环境或重跑旧 tag 时缺少 `@types/plist`，但 TypeScript 会从 electron-builder 相关类型链路发现 `plist` 类型引用；已将 `@types/plist` 显式加入 devDependency，并在 workflow `npm ci` 后 `npm install --no-save @types/plist` 以兼容重跑旧 tag。
+- GitHub Actions 的 `Re-run all jobs` 会重跑旧 run 当时的 workflow 文件和 tag 提交，不会使用 main 上后来修复的 workflow；要补发已有 tag，必须用 `workflow_dispatch` 从 main 手动运行并输入 tag。
+- v2.0.1 使用最新 workflow 手动发布后已上传 13 个 Release assets；旧 tag 的 artifactName 生成了空前缀文件名，后续版本已改为稳定 ASCII 前缀 `Yibiao-${version}-${os}-${arch}.${ext}`。
+- 下载的 `-2.0.1-win-x64.exe` SHA256 与 GitHub Release digest 一致，7-Zip 可识别为 NSIS/Electron 安装包；本地启动后进程保持运行且有响应窗口标题，说明安装器没有崩溃。用户看不到窗口更可能是安全扫描延迟、窗口在后方/任务栏，或旧产物以 `-` 开头导致识别体验差。
