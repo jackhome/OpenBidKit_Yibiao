@@ -1,6 +1,10 @@
 function DuplicateCheckPage() {
   return (
     <div className="page-stack">
+      <div className="feature-under-development-overlay" role="status" aria-live="polite">
+        <strong>正在开发中，敬请期待</strong>
+        <span>此功能尚未完成，请先不要使用。</span>
+      </div>
       <section className="hero-panel compact-hero">
         <div>
           <span className="section-kicker">文本风险</span>

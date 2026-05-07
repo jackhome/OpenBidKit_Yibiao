@@ -1,7 +1,28 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app, dialog } = require('electron');
-const AdmZip = require('adm-zip');
+const { imageSize } = require('image-size');
+const {
+  AlignmentType,
+  BorderStyle,
+  Document,
+  ExternalHyperlink,
+  HeadingLevel,
+  ImageRun,
+  LevelFormat,
+  Packer,
+  Paragraph,
+  ShadingType,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+  UnderlineType,
+  WidthType,
+} = require('docx');
+
+const MAX_IMAGE_WIDTH = 520;
+const NUMBERING_REFERENCE = 'technical-plan-numbering';
 
 function sanitizeFilename(value) {
   return String(value || '标书文档')
@@ -11,225 +32,324 @@ function sanitizeFilename(value) {
     .slice(0, 120) || '标书文档';
 }
 
-function escapeXml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function runProperties(options = {}) {
-  const parts = ['<w:rFonts w:ascii="SimSun" w:eastAsia="宋体" w:hAnsi="SimSun"/>'];
-  if (options.bold) parts.push('<w:b/>');
-  if (options.italic) parts.push('<w:i/>');
-  if (options.size) parts.push(`<w:sz w:val="${options.size}"/>`);
-  return `<w:rPr>${parts.join('')}</w:rPr>`;
+function cleanText(value) {
+  return String(value || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
 }
 
 function textRun(text, options = {}) {
-  const segments = String(text || '').split(/\r?\n/);
-  const content = segments.map((segment, index) => `${index ? '<w:br/>' : ''}<w:t xml:space="preserve">${escapeXml(segment)}</w:t>`).join('');
-  return `<w:r>${runProperties(options)}${content}</w:r>`;
-}
-
-function paragraphFromRuns(runs, options = {}) {
-  const pPr = [];
-  if (options.style) pPr.push(`<w:pStyle w:val="${options.style}"/>`);
-  if (options.align) pPr.push(`<w:jc w:val="${options.align}"/>`);
-  pPr.push(`<w:spacing w:after="${options.after ?? 160}"/>`);
-  return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${runs.join('')}</w:p>`;
-}
-
-function paragraph(text, options = {}) {
-  return paragraphFromRuns([textRun(text, options)], options);
-}
-
-function markdownRuns(text) {
-  const pattern = /(\*\*.*?\*\*|\*.*?\*|`.*?`)/g;
-  const parts = String(text || '').split(pattern);
-  return parts.filter(Boolean).map((part) => {
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      return textRun(part.slice(2, -2), { bold: true });
-    }
-    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
-      return textRun(part.slice(1, -1), { italic: true });
-    }
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
-      return textRun(part.slice(1, -1));
-    }
-    return textRun(part);
+  return new TextRun({
+    text: cleanText(text),
+    font: '宋体',
+    size: options.size || 24,
+    bold: options.bold,
+    italics: options.italics,
+    strike: options.strike,
+    color: options.color,
+    underline: options.underline ? { type: UnderlineType.SINGLE } : undefined,
   });
 }
 
-function parseMarkdownBlocks(content) {
+function lineBreakRun() {
+  return new TextRun({ break: 1 });
+}
+
+function paragraph(children, options = {}) {
+  return new Paragraph({
+    children: children?.length ? children : [textRun('')],
+    heading: options.heading,
+    alignment: options.alignment,
+    bullet: options.bullet,
+    numbering: options.numbering,
+    spacing: { before: options.before || 0, after: options.after ?? 160, line: 360 },
+    indent: options.indent,
+    border: options.border,
+    shading: options.shading,
+  });
+}
+
+function headingLevel(level) {
+  if (level <= 1) return HeadingLevel.HEADING_1;
+  if (level === 2) return HeadingLevel.HEADING_2;
+  if (level === 3) return HeadingLevel.HEADING_3;
+  return HeadingLevel.HEADING_4;
+}
+
+function imageTypeFromMime(mime) {
+  if (!mime) return null;
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('bmp')) return 'bmp';
+  return null;
+}
+
+function imageTypeFromPath(filePath) {
+  const ext = path.extname(filePath || '').toLowerCase().replace('.', '');
+  if (ext === 'jpeg') return 'jpg';
+  return ['png', 'jpg', 'gif', 'bmp'].includes(ext) ? ext : null;
+}
+
+async function loadImage(source, context = {}) {
+  const url = String(source || '').trim();
+  if (!url) return null;
+
+  const dataUrlMatch = /^data:([^;,]+);base64,(.+)$/i.exec(url);
+  if (dataUrlMatch) {
+    return {
+      buffer: Buffer.from(dataUrlMatch[2], 'base64'),
+      type: imageTypeFromMime(dataUrlMatch[1]),
+    };
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`图片下载失败：${url}`);
+    }
+    const type = imageTypeFromMime(response.headers.get('content-type')) || imageTypeFromPath(new URL(url).pathname);
+    return { buffer: Buffer.from(await response.arrayBuffer()), type };
+  }
+
+  const fileUrlPrefix = 'file://';
+  const rawPath = url.startsWith(fileUrlPrefix) ? decodeURIComponent(new URL(url).pathname) : url;
+  const resolvedPath = path.isAbsolute(rawPath)
+    ? rawPath
+    : path.resolve(context.baseDir || process.cwd(), rawPath);
+
+  if (!fs.existsSync(resolvedPath)) {
+    return null;
+  }
+
+  return {
+    buffer: fs.readFileSync(resolvedPath),
+    type: imageTypeFromPath(resolvedPath),
+  };
+}
+
+async function imageRunFromNode(node, context) {
+  const loaded = await loadImage(node.url, context);
+  if (!loaded?.buffer || !loaded.type) {
+    return textRun(`[图片无法导出：${node.alt || node.url || '未知图片'}]`, { color: 'C83220' });
+  }
+
+  const size = imageSize(loaded.buffer);
+  const sourceWidth = size.width || MAX_IMAGE_WIDTH;
+  const sourceHeight = size.height || Math.round(MAX_IMAGE_WIDTH * 0.62);
+  const ratio = Math.min(1, MAX_IMAGE_WIDTH / sourceWidth);
+  const width = Math.round(sourceWidth * ratio);
+  const height = Math.round(sourceHeight * ratio);
+
+  return new ImageRun({
+    type: loaded.type,
+    data: loaded.buffer,
+    transformation: { width, height },
+    altText: {
+      title: cleanText(node.alt || '图片'),
+      description: cleanText(node.alt || node.url || 'Markdown 图片'),
+      name: cleanText(node.alt || 'image'),
+    },
+  });
+}
+
+async function inlineRuns(nodes = [], context = {}, marks = {}) {
+  const runs = [];
+
+  for (const node of nodes) {
+    if (node.type === 'text') {
+      runs.push(textRun(node.value, marks));
+    } else if (node.type === 'strong') {
+      runs.push(...await inlineRuns(node.children, context, { ...marks, bold: true }));
+    } else if (node.type === 'emphasis') {
+      runs.push(...await inlineRuns(node.children, context, { ...marks, italics: true }));
+    } else if (node.type === 'delete') {
+      runs.push(...await inlineRuns(node.children, context, { ...marks, strike: true }));
+    } else if (node.type === 'inlineCode') {
+      runs.push(new TextRun({ text: cleanText(node.value), font: 'Consolas', size: 22, color: '155BD7' }));
+    } else if (node.type === 'break') {
+      runs.push(lineBreakRun());
+    } else if (node.type === 'link') {
+      const children = await inlineRuns(node.children, context, { ...marks, color: '2174FD', underline: true });
+      runs.push(new ExternalHyperlink({ link: node.url, children }));
+    } else if (node.type === 'image') {
+      runs.push(await imageRunFromNode(node, context));
+    } else if (node.children) {
+      runs.push(...await inlineRuns(node.children, context, marks));
+    }
+  }
+
+  return runs;
+}
+
+async function tableCellParagraphs(cell, context) {
+  const blocks = await markdownNodesToDocx(cell.children || [], context, { inTable: true });
+  if (!blocks.length) return [paragraph([textRun('')], { after: 80 })];
+  return blocks.filter((block) => block instanceof Paragraph);
+}
+
+async function markdownNodesToDocx(nodes = [], context = {}, options = {}) {
   const blocks = [];
-  const lines = String(content || '').split('\n');
-  let index = 0;
 
-  while (index < lines.length) {
-    const line = lines[index].replace(/\r$/, '').trim();
-    if (!line) {
-      index += 1;
-      continue;
-    }
-
-    if (/^[-*]\s+/.test(line) || /^\d+\.\s/.test(line)) {
-      const items = [];
-      while (index < lines.length) {
-        const stripped = lines[index].replace(/\r$/, '').trim();
-        const bulletMatch = /^[-*]\s+(.*)$/.exec(stripped);
-        if (bulletMatch) {
-          if (bulletMatch[1].trim()) items.push(['unordered', null, bulletMatch[1].trim()]);
-          index += 1;
-          continue;
-        }
-        const numberMatch = /^(\d+)\.\s+(.*)$/.exec(stripped);
-        if (numberMatch) {
-          if (numberMatch[2].trim()) items.push(['ordered', numberMatch[1], numberMatch[2].trim()]);
-          index += 1;
-          continue;
-        }
-        break;
+  for (const node of nodes) {
+    if (node.type === 'heading') {
+      blocks.push(paragraph(await inlineRuns(node.children, context), {
+        heading: headingLevel(node.depth),
+        before: node.depth === 1 ? 280 : 180,
+        after: 120,
+      }));
+    } else if (node.type === 'paragraph') {
+      blocks.push(paragraph(await inlineRuns(node.children, context), { after: options.inTable ? 80 : 160 }));
+    } else if (node.type === 'list') {
+      for (const item of node.children || []) {
+        const firstParagraph = (item.children || []).find((child) => child.type === 'paragraph');
+        const restChildren = (item.children || []).filter((child) => child !== firstParagraph);
+        const listOptions = node.ordered
+          ? { numbering: { reference: NUMBERING_REFERENCE, level: Math.min(options.listLevel || 0, 2) } }
+          : { bullet: { level: Math.min(options.listLevel || 0, 2) } };
+        blocks.push(paragraph(await inlineRuns(firstParagraph?.children || [], context), listOptions));
+        blocks.push(...await markdownNodesToDocx(restChildren, context, { ...options, listLevel: (options.listLevel || 0) + 1 }));
       }
-      if (items.length) blocks.push(['list', items]);
-      continue;
-    }
-
-    if (line.includes('|')) {
+    } else if (node.type === 'table') {
       const rows = [];
-      while (index < lines.length) {
-        const stripped = lines[index].replace(/\r$/, '').trim();
-        if (!stripped.includes('|')) break;
-        if (!/^\|?[-\s|]+\|?$/.test(stripped)) {
-          const rowText = stripped.split('|').map((cell) => cell.trim()).filter(Boolean).join(' | ');
-          if (rowText) rows.push(rowText);
+      for (const [rowIndex, row] of (node.children || []).entries()) {
+        const cells = [];
+        for (const cell of row.children || []) {
+          cells.push(new TableCell({
+            children: await tableCellParagraphs(cell, context),
+            shading: rowIndex === 0 ? { type: ShadingType.CLEAR, fill: 'F1F6FF' } : undefined,
+            margins: { top: 120, bottom: 120, left: 140, right: 140 },
+          }));
         }
-        index += 1;
+        rows.push(new TableRow({ children: cells }));
       }
-      if (rows.length) blocks.push(['table', rows]);
-      continue;
-    }
-
-    if (line.startsWith('#')) {
-      const match = /^(#+)\s*(.*)$/.exec(line);
-      if (match) blocks.push(['heading', Math.min(match[1].length, 3), match[2].trim()]);
-      index += 1;
-      continue;
-    }
-
-    const paraLines = [];
-    while (index < lines.length) {
-      const stripped = lines[index].replace(/\r$/, '').trim();
-      if (stripped && !/^[-*]\s+/.test(stripped) && !/^\d+\.\s/.test(stripped) && !stripped.includes('|') && !stripped.startsWith('#')) {
-        paraLines.push(stripped);
-        index += 1;
-      } else {
-        break;
+      if (rows.length) {
+        blocks.push(new Table({
+          rows,
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          borders: {
+            top: { style: BorderStyle.SINGLE, size: 1, color: 'DCDFF6' },
+            bottom: { style: BorderStyle.SINGLE, size: 1, color: 'DCDFF6' },
+            left: { style: BorderStyle.SINGLE, size: 1, color: 'DCDFF6' },
+            right: { style: BorderStyle.SINGLE, size: 1, color: 'DCDFF6' },
+            insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'E8EDF6' },
+            insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'E8EDF6' },
+          },
+        }));
       }
-    }
-    if (paraLines.length) {
-      blocks.push(['paragraph', paraLines.join(' ')]);
-    } else {
-      index += 1;
+    } else if (node.type === 'blockquote') {
+      const quoteBlocks = await markdownNodesToDocx(node.children || [], context, options);
+      for (const block of quoteBlocks) {
+        if (block instanceof Paragraph) {
+          block.root.push;
+        }
+      }
+      blocks.push(...quoteBlocks.map((block) => block instanceof Paragraph ? block : block));
+    } else if (node.type === 'code') {
+      blocks.push(paragraph([new TextRun({ text: cleanText(node.value), font: 'Consolas', size: 21, color: '243048' })], {
+        shading: { type: ShadingType.CLEAR, fill: 'F6F9FF' },
+        indent: { left: 260, right: 260 },
+      }));
+    } else if (node.type === 'thematicBreak') {
+      blocks.push(paragraph([textRun('────────────────────────', { color: 'DCDFF6' })], { alignment: AlignmentType.CENTER }));
+    } else if (node.children) {
+      blocks.push(...await markdownNodesToDocx(node.children, context, options));
     }
   }
 
   return blocks;
 }
 
-function renderMarkdownBlocks(paragraphs, blocks) {
-  for (const block of blocks) {
-    const kind = block[0];
-    if (kind === 'list') {
-      for (const [itemKind, number, text] of block[1]) {
-        const prefix = itemKind === 'unordered' ? '• ' : `${number}. `;
-        paragraphs.push(paragraphFromRuns([textRun(prefix), ...markdownRuns(text)]));
-      }
-    } else if (kind === 'table') {
-      for (const row of block[1]) {
-        paragraphs.push(paragraph(row));
-      }
-    } else if (kind === 'heading') {
-      paragraphs.push(paragraph(block[2], { style: `Heading${block[1]}`, bold: true }));
-    } else if (kind === 'paragraph') {
-      paragraphs.push(paragraphFromRuns(markdownRuns(block[1])));
-    }
-  }
+async function parseMarkdown(content) {
+  const [{ unified }, remarkParse, remarkGfm] = await Promise.all([
+    import('unified'),
+    import('remark-parse'),
+    import('remark-gfm'),
+  ]);
+  return unified().use(remarkParse.default).use(remarkGfm.default).parse(String(content || ''));
 }
 
-function addMarkdownContent(paragraphs, content) {
-  renderMarkdownBlocks(paragraphs, parseMarkdownBlocks(content));
+async function markdownToDocxBlocks(content, context = {}) {
+  const tree = await parseMarkdown(content);
+  return markdownNodesToDocx(tree.children || [], context);
 }
 
-function addOutlineItems(paragraphs, items, level = 1) {
+async function addMarkdownContent(children, content, context) {
+  children.push(...await markdownToDocxBlocks(content, context));
+}
+
+async function addOutlineItems(children, items, context, level = 1) {
   for (const item of items || []) {
     const title = `${item.id || ''} ${item.title || '未命名章节'}`.trim();
-    if (level <= 3) {
-      paragraphs.push(paragraph(title, { style: `Heading${level}`, bold: true }));
-    } else {
-      paragraphs.push(paragraph(title, { bold: true, after: 80 }));
-    }
+    children.push(paragraph([textRun(title, { bold: true })], {
+      heading: headingLevel(level),
+      before: level === 1 ? 320 : 200,
+      after: 120,
+    }));
 
     if (!item.children?.length) {
       if (String(item.content || '').trim()) {
-        addMarkdownContent(paragraphs, item.content);
+        await addMarkdownContent(children, item.content, context);
       }
       continue;
     }
 
-    addOutlineItems(paragraphs, item.children, level + 1);
+    await addOutlineItems(children, item.children, context, level + 1);
   }
 }
 
-function stylesXml() {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/>${runProperties()}</w:style>
-  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:spacing w:before="360" w:after="180"/></w:pPr>${runProperties({ bold: true, size: 32 })}</w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:spacing w:before="280" w:after="140"/></w:pPr>${runProperties({ bold: true, size: 28 })}</w:style>
-  <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:spacing w:before="220" w:after="100"/></w:pPr>${runProperties({ bold: true, size: 24 })}</w:style>
-</w:styles>`;
+function createNumberingConfig() {
+  return {
+    config: [{
+      reference: NUMBERING_REFERENCE,
+      levels: [0, 1, 2].map((level) => ({
+        level,
+        format: LevelFormat.DECIMAL,
+        text: `%${level + 1}.`,
+        alignment: AlignmentType.START,
+        style: {
+          paragraph: {
+            indent: { left: 720 + level * 420, hanging: 260 },
+          },
+        },
+      })),
+    }],
+  };
 }
 
-function documentXml(payload) {
-  const paragraphs = [];
-  paragraphs.push(paragraph('内容由AI生成', { italic: true, align: 'center', size: 18 }));
-  paragraphs.push(paragraph(payload.project_name || '投标技术文件', { bold: true, align: 'center', size: 32, after: 260 }));
+async function buildDocxBuffer(payload) {
+  const context = { baseDir: payload.base_dir || payload.baseDir };
+  const children = [
+    paragraph([textRun('内容由 AI 生成', { italics: true, size: 18 })], { alignment: AlignmentType.CENTER, after: 120 }),
+    paragraph([textRun(payload.project_name || '投标技术文件', { bold: true, size: 34 })], { alignment: AlignmentType.CENTER, after: 300 }),
+  ];
 
   if (String(payload.project_overview || '').trim()) {
-    paragraphs.push(paragraph('项目概述', { style: 'Heading1', bold: true }));
-    paragraphs.push(paragraph(payload.project_overview));
+    children.push(paragraph([textRun('项目概述', { bold: true })], { heading: HeadingLevel.HEADING_1, before: 260, after: 120 }));
+    children.push(...await markdownToDocxBlocks(payload.project_overview, context));
   }
 
-  addOutlineItems(paragraphs, payload.outline || []);
+  await addOutlineItems(children, payload.outline || [], context);
 
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <w:body>
-    ${paragraphs.join('\n')}
-    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>
-  </w:body>
-</w:document>`;
-}
+  const doc = new Document({
+    numbering: createNumberingConfig(),
+    styles: {
+      default: {
+        document: {
+          run: { font: '宋体', size: 24 },
+          paragraph: { spacing: { line: 360, after: 160 } },
+        },
+      },
+    },
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+        },
+      },
+      children,
+    }],
+  });
 
-function buildDocxBuffer(payload) {
-  const zip = new AdmZip();
-  zip.addFile('[Content_Types].xml', Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-</Types>`, 'utf-8'));
-  zip.addFile('_rels/.rels', Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>`, 'utf-8'));
-  zip.addFile('word/document.xml', Buffer.from(documentXml(payload), 'utf-8'));
-  zip.addFile('word/styles.xml', Buffer.from(stylesXml(), 'utf-8'));
-  return zip.toBuffer();
+  return Packer.toBuffer(doc);
 }
 
 function createExportService() {
@@ -251,13 +371,13 @@ function createExportService() {
         return { success: false, canceled: true, message: '已取消导出' };
       }
 
-      fs.writeFileSync(result.filePath, buildDocxBuffer(payload));
+      fs.writeFileSync(result.filePath, await buildDocxBuffer(payload));
       return { success: true, path: result.filePath, message: 'Word 已导出' };
     },
   };
 }
 
 module.exports = {
-  createExportService,
   buildDocxBuffer,
+  createExportService,
 };
