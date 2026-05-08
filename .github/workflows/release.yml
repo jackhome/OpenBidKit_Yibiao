@@ -118,9 +118,13 @@ jobs:
       - name: Build renderer
         run: npm run build
 
-      - name: Build and publish Windows artifacts
+      - name: Build Windows NSIS and ZIP artifacts
         if: runner.os == 'Windows'
-        run: npx electron-builder --win --publish never
+        run: npx electron-builder --win nsis zip --publish never
+
+      - name: Build Windows MSI artifact
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win msi --publish never -c.productName=OpenBidKit_Yibiao -c.extraMetadata.author=mark -c.copyright="Copyright (c) 2026 mark"
 
       - name: Build and publish macOS artifacts
         if: runner.os == 'macOS'
