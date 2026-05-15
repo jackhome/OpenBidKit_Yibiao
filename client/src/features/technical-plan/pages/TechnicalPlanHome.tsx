@@ -347,6 +347,14 @@ function TechnicalPlanHome() {
     return updatedOutlineData;
   };
 
+  const resetTechnicalPlan = () => {
+    if (!window.confirm('会清空整个技术方案编写进度，是否确认？')) {
+      return;
+    }
+
+    setState(resetState);
+  };
+
   const saveContentGenerationOptions = async (contentGenerationOptions: ContentGenerationOptions) => {
     await window.yibiao?.workspace.updateTechnicalPlan({ contentGenerationOptions });
     setState((prev) => ({ ...prev, contentGenerationOptions }));
@@ -413,7 +421,7 @@ function TechnicalPlanHome() {
           label: '重置',
           variant: 'danger' as const,
           tooltip: '清空当前技术方案流程',
-          onClick: () => setState(resetState),
+          onClick: resetTechnicalPlan,
         },
         {
           id: 'home',

@@ -24,6 +24,8 @@ const toastTitleMap: Record<ToastType, string> = {
   info: '提示',
 };
 
+const getToastDuration = (type: ToastType) => (type === 'error' ? 5000 : 2000);
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -35,7 +37,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         id,
         message,
         type,
-        duration: 5000,
+        duration: getToastDuration(type),
       },
     ]);
   }, []);
