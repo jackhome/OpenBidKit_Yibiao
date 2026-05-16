@@ -10,8 +10,6 @@ import * as cheerio from 'cheerio';
 import iconv from 'iconv-lite';
 import mammoth from 'mammoth';
 import { lookup as lookupMimeType } from 'mime-types';
-import { PDFParse } from 'pdf-parse';
-import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import TurndownService from 'turndown';
 import turndownPluginGfm from 'turndown-plugin-gfm';
 
@@ -28,7 +26,6 @@ const PDF_TEXT_DUPLICATE_TOLERANCE = 1;
 const PDF_TEXT_LINE_TOLERANCE = 3;
 
 const { gfm } = turndownPluginGfm;
-const PDF_OP_NAMES = Object.fromEntries(Object.entries(OPS).map(([name, value]) => [value, name]));
 
 export class ConversionError extends Error {
   constructor(code, message, details = {}) {
@@ -187,6 +184,7 @@ function restoreTables(markdown, placeholders) {
 }
 
 async function convertPdfFile(inputPath, includeImages) {
+  const { PDFParse } = await import('pdf-parse');
   const buffer = await readFile(inputPath);
   const parser = new PDFParse({ data: buffer });
 
@@ -218,6 +216,8 @@ async function safePdfCall(callback) {
 }
 
 async function extractPdfJsTables(buffer) {
+  const { getDocument, OPS } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const pdfOpNames = Object.fromEntries(Object.entries(OPS).map(([name, value]) => [value, name]));
   const loadingTask = getDocument({
     data: new Uint8Array(buffer),
     disableWorker: true,
@@ -233,7 +233,7 @@ async function extractPdfJsTables(buffer) {
         page.getOperatorList(),
       ]);
       const textItems = normalizePdfJsTextItems(textContent.items || []);
-      const rectangles = extractPdfJsRectangles(operatorList);
+      const rectangles = extractPdfJsRectangles(operatorList, pdfOpNames);
       pages.push({ tables: buildPdfJsTables(rectangles, textItems) });
     }
     return { pages };
@@ -279,13 +279,13 @@ function normalizePdfJsTextItems(items) {
   return kept;
 }
 
-function extractPdfJsRectangles(operatorList) {
+function extractPdfJsRectangles(operatorList, pdfOpNames) {
   const rectangles = [];
   const stack = [];
   let matrix = [1, 0, 0, 1, 0, 0];
 
   for (let index = 0; index < operatorList.fnArray.length; index += 1) {
-    const name = PDF_OP_NAMES[operatorList.fnArray[index]];
+    const name = pdfOpNames[operatorList.fnArray[index]];
     const args = operatorList.argsArray[index];
 
     if (name === 'save') {
