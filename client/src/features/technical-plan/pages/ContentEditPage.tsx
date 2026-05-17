@@ -516,6 +516,39 @@ function ContentEditPage({
     }
   };
 
+  const handleRegenerateSection = async () => {
+    if (!selectedItem || !selectedIsLeaf || !outlineData?.outline?.length) return;
+    const currentOutline = outlineData;
+
+    if (!window.confirm(`确定重新生成“${selectedItem.title}”？将覆盖当前正文内容。`)) return;
+
+    try {
+      const config = await window.yibiao?.config.load();
+      const nextImageModelStatus = config?.image_model?.status || 'untested';
+      const nextImageModelAvailable = nextImageModelStatus === 'available';
+      const savedGenerationOptions = normalizeGenerationOptions(contentGenerationOptions, nextImageModelAvailable, leaves.length);
+      const shouldRealTimeRender = config?.real_time_render === true;
+      await window.yibiao?.tasks.startContentGeneration({
+        outlineData: currentOutline,
+        projectOverview: currentOutline.project_overview || projectOverview,
+        reference_knowledge_document_ids: referenceKnowledgeDocumentIds,
+        regenerate: true,
+        targetItemId: selectedItem.id,
+        requirement: '',
+        generationOptions: {
+          useAiImages: nextImageModelAvailable && savedGenerationOptions.useAiImages,
+          maxAiImages: savedGenerationOptions.maxAiImages,
+          useMermaidImages: savedGenerationOptions.useMermaidImages,
+          tableRequirement: savedGenerationOptions.tableRequirement,
+        },
+        real_time_render: shouldRealTimeRender,
+      });
+      showToast('小节重新生成任务已在后台启动', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '启动小节重新生成失败', 'error');
+    }
+  };
+
   const startEditingContent = () => {
     if (!selectedItem || !selectedIsLeaf) {
       showToast('请选择一个叶子小节后再编辑正文', 'info');
@@ -717,7 +750,12 @@ function ContentEditPage({
                   <button type="button" className="secondary-action" onClick={cancelEditingContent}>取消</button>
                 </>
               ) : (
-                <button type="button" className="secondary-action" onClick={startEditingContent} disabled={!selectedItem || !selectedIsLeaf || running}>编辑</button>
+                <>
+                  <button type="button" className="secondary-action" onClick={startEditingContent} disabled={!selectedItem || !selectedIsLeaf || running}>编辑</button>
+                  {selectedIsLeaf && (selectedStatus === 'success' || selectedStatus === 'error') && (
+                    <button type="button" className="secondary-action" onClick={() => void handleRegenerateSection()} disabled={running}>重新生成</button>
+                  )}
+                </>
               )}
             </div>
           </div>
