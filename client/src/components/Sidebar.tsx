@@ -32,7 +32,7 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
           <img src={logoUrl} alt="" />
         </div>
         <div className="brand-copy">
-          <span>易标</span>
+          <span>达标</span>
           <strong>投标工具箱</strong>
         </div>
       </div>

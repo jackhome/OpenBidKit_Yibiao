@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 let streamRequestId = 0;
 
 const bridge = {
-  appName: '易标投标工具箱',
+  appName: '达标投标工具箱',
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   getLatestVersion: () => ipcRenderer.invoke('app:get-latest-version'),

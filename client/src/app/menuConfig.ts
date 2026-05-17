@@ -12,11 +12,6 @@ export const appMenuItems: AppMenuItem[] = [
     description: '素材、模板和案例资产',
   },
   {
-    id: 'duplicate-check',
-    label: '标书查重',
-    description: '相似度与重复表达检测',
-  },
-  {
     id: 'rejection-check',
     label: '废标项检查',
     description: '硬性条款与响应完整性',
