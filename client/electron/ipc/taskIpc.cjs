@@ -13,6 +13,10 @@ function registerTaskIpc({ taskService }) {
     taskService.subscribe(event.sender);
     return taskService.startContentGeneration(payload);
   });
+  ipcMain.handle('tasks:continue-content-generation', (event, payload) => {
+    taskService.subscribe(event.sender);
+    return taskService.continueContentGeneration(payload);
+  });
   ipcMain.handle('tasks:get-active', (event) => {
     taskService.subscribe(event.sender);
     return taskService.getActiveTasks();

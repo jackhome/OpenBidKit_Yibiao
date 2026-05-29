@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { runBidAnalysisTask } = require('./bidAnalysisTask.cjs');
-const { runContentGenerationTask } = require('./contentGenerationTask.cjs');
+const { runContentGenerationTask, runContinueContentGeneration } = require('./contentGenerationTask.cjs');
 const { runOutlineGenerationTask } = require('./outlineGenerationTask.cjs');
 
 const taskFields = {
@@ -28,6 +28,19 @@ function createTask(type) {
 function createTaskService({ aiService, workspaceStore, knowledgeBaseService }) {
   const subscribers = new Set();
   const activeTasks = new Map();
+
+  // 清理之前可能卡死的任务（例如 app 崩溃或同步错误导致的 running 状态残留）
+  (function cleanupStaleTasks() {
+    const plan = workspaceStore.loadTechnicalPlan();
+    if (!plan) return;
+    for (const field of Object.values(taskFields)) {
+      const task = plan[field];
+      if (task?.status === 'running') {
+        const cleaned = { ...task, status: 'error', error: '应用重启，上一轮任务未正常结束', updated_at: now() };
+        workspaceStore.updateTechnicalPlan({ [field]: cleaned });
+      }
+    }
+  }());
 
   function emit(task, technicalPlan) {
     const event = { task, technicalPlan };
@@ -80,7 +93,7 @@ function createTaskService({ aiService, workspaceStore, knowledgeBaseService }) 
     const technicalPlan = workspaceStore.updateTechnicalPlan({ ...initialPartial, [taskField]: currentTask });
     emit(currentTask, technicalPlan);
 
-    runner({ aiService, workspaceStore, knowledgeBaseService, updateTask, payload }).catch((error) => {
+    Promise.resolve().then(() => runner({ aiService, workspaceStore, knowledgeBaseService, updateTask, payload })).catch((error) => {
       const failedTask = updateTask({ status: 'error', error: error.message || '任务执行失败' });
       const nextPlan = workspaceStore.updateTechnicalPlan({ [taskField]: failedTask });
       emit(failedTask, nextPlan);
@@ -104,6 +117,9 @@ function createTaskService({ aiService, workspaceStore, knowledgeBaseService }) 
     },
     startContentGeneration(payload) {
       return startTask('content-generation', payload, runContentGenerationTask);
+    },
+    continueContentGeneration(payload) {
+      return startTask('content-generation', payload, runContinueContentGeneration);
     },
     getActiveTasks() {
       return Array.from(activeTasks.values());

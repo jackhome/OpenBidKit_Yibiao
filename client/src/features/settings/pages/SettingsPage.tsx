@@ -1,22 +1,10 @@
 import { useEffect, useState } from 'react';
 import { FloatingToolbar, useToast } from '../../../shared/ui';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
-import type { ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProvider, ImageModelStatus, LatestReleaseInfo } from '../../../shared/types';
+import type { ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProvider, ImageModelStatus } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
 type SettingsTab = 'general' | 'text-model' | 'image-model' | 'file-parser';
-
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number);
-  const pb = b.split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] || 0;
-    const nb = pb[i] || 0;
-    if (na > nb) return 1;
-    if (na < nb) return -1;
-  }
-  return 0;
-}
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
@@ -168,38 +156,10 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const [testingTextModel, setTestingTextModel] = useState(false);
   const [testingImageModel, setTestingImageModel] = useState(false);
   const [imageTestPreview, setImageTestPreview] = useState<{ src: string; title: string } | null>(null);
-  const [appVersion, setAppVersion] = useState('');
-  const [latestRelease, setLatestRelease] = useState<LatestReleaseInfo | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'downloading' | 'downloaded' | 'error'>('idle');
-  const [updatePercent, setUpdatePercent] = useState(0);
-  const [updateError, setUpdateError] = useState('');
   const { showToast } = useToast();
 
   useEffect(() => {
     void loadTextConfig();
-    void window.yibiao?.getVersion().then(setAppVersion);
-    void window.yibiao?.getLatestVersion().then(setLatestRelease).catch(() => undefined);
-
-    const unsubs: Array<() => void> = [];
-    unsubs.push(
-      window.yibiao?.onUpdateProgress(({ percent }) => {
-        setUpdateStatus('downloading');
-        setUpdatePercent(Math.round(percent));
-      }) ?? (() => {})
-    );
-    unsubs.push(
-      window.yibiao?.onUpdateDownloaded(() => {
-        setUpdateStatus('downloaded');
-      }) ?? (() => {})
-    );
-    unsubs.push(
-      window.yibiao?.onUpdateError(({ message }) => {
-        setUpdateStatus('error');
-        setUpdateError(message);
-      }) ?? (() => {})
-    );
-
-    return () => { unsubs.forEach((unsub) => unsub()); };
   }, []);
 
   const loadTextConfig = async () => {

@@ -326,6 +326,7 @@ function ContentEditPage({
   const [developerMode, setDeveloperMode] = useState(false);
   const [imageModelStatus, setImageModelStatus] = useState<ImageModelStatus>('untested');
   const [generationDialogOpen, setGenerationDialogOpen] = useState(false);
+  const [targetPages, setTargetPages] = useState(0);
   const [draftGenerationOptions, setDraftGenerationOptions] = useState<ContentGenerationOptions>(defaultContentGenerationOptions);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -470,6 +471,7 @@ function ContentEditPage({
           maxAiImages: savedGenerationOptions.maxAiImages,
           useMermaidImages: savedGenerationOptions.useMermaidImages,
           tableRequirement: savedGenerationOptions.tableRequirement,
+          targetTotalWords: targetPages > 0 ? Math.round(targetPages * 700) : 0,
         },
         real_time_render: shouldRealTimeRender,
       });
@@ -504,6 +506,7 @@ function ContentEditPage({
           maxAiImages: savedGenerationOptions.maxAiImages,
           useMermaidImages: savedGenerationOptions.useMermaidImages,
           tableRequirement: savedGenerationOptions.tableRequirement,
+          targetTotalWords: targetPages > 0 ? Math.round(targetPages * 700) : 0,
         },
         real_time_render: shouldRealTimeRender,
       });
@@ -520,7 +523,7 @@ function ContentEditPage({
     if (!selectedItem || !selectedIsLeaf || !outlineData?.outline?.length) return;
     const currentOutline = outlineData;
 
-    if (!window.confirm(`确定重新生成“${selectedItem.title}”？将覆盖当前正文内容。`)) return;
+    if (!window.confirm(`确定重新生成”${selectedItem.title}”？将覆盖当前正文内容。`)) return;
 
     try {
       const config = await window.yibiao?.config.load();
@@ -540,12 +543,32 @@ function ContentEditPage({
           maxAiImages: savedGenerationOptions.maxAiImages,
           useMermaidImages: savedGenerationOptions.useMermaidImages,
           tableRequirement: savedGenerationOptions.tableRequirement,
+          targetTotalWords: targetPages > 0 ? Math.round(targetPages * 700) : 0,
         },
         real_time_render: shouldRealTimeRender,
       });
       showToast('小节重新生成任务已在后台启动', 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动小节重新生成失败', 'error');
+    }
+  };
+
+  const handleContinueSection = async () => {
+    if (!selectedItem || !selectedIsLeaf || !outlineData?.outline?.length) return;
+    const currentOutline = outlineData;
+
+    try {
+      const config = await window.yibiao?.config.load();
+      const nextImageModelStatus = config?.image_model?.status || 'untested';
+      const nextImageModelAvailable = nextImageModelStatus === 'available';
+      const savedGenerationOptions = normalizeGenerationOptions(contentGenerationOptions, nextImageModelAvailable, leaves.length);
+      await window.yibiao?.tasks.continueContentGeneration({
+        outlineData: currentOutline,
+        targetItemId: selectedItem.id,
+      });
+      showToast('继续生成任务已在后台启动', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '启动继续生成失败', 'error');
     }
   };
 
@@ -755,6 +778,9 @@ function ContentEditPage({
                   {selectedIsLeaf && (selectedStatus === 'success' || selectedStatus === 'error') && (
                     <button type="button" className="secondary-action" onClick={() => void handleRegenerateSection()} disabled={running}>重新生成</button>
                   )}
+                  {selectedIsLeaf && selectedStatus === 'error' && !!(sections[selectedItem?.id ?? '']?.content) && (
+                    <button type="button" className="secondary-action" onClick={() => void handleContinueSection()} disabled={running}>继续生成</button>
+                  )}
                 </>
               )}
             </div>
@@ -832,6 +858,20 @@ function ContentEditPage({
                 >
                   {tableRequirementOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
                 </select>
+              </label>
+              <label className="content-generation-config-row">
+                <span>
+                  <strong>目标方案页数</strong>
+                  <small>AI 会根据目标页数控制篇幅，{targetPages > 0 ? `约 ${Math.round(targetPages * 700)} 字` : '留空则不限制字数'}。含图表的页按 500~700 字/页估算。</small>
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  value={targetPages || ''}
+                  placeholder="不限"
+                  onChange={(event) => setTargetPages(Math.max(0, Number(event.target.value) || 0))}
+                />
               </label>
               <label className="content-generation-config-row">
                 <span>

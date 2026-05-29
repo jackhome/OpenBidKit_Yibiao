@@ -6,24 +6,6 @@ const bridge = {
   appName: '达标投标工具箱',
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:get-version'),
-  getLatestVersion: () => ipcRenderer.invoke('app:get-latest-version'),
-  startUpdate: () => ipcRenderer.invoke('app:start-update'),
-  quitAndInstall: () => ipcRenderer.invoke('app:quit-and-install'),
-  onUpdateProgress: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-progress', listener);
-    return () => ipcRenderer.removeListener('app:update-progress', listener);
-  },
-  onUpdateDownloaded: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-downloaded', listener);
-    return () => ipcRenderer.removeListener('app:update-downloaded', listener);
-  },
-  onUpdateError: (callback) => {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on('app:update-error', listener);
-    return () => ipcRenderer.removeListener('app:update-error', listener);
-  },
   config: {
     load: () => ipcRenderer.invoke('config:load'),
     save: (config) => ipcRenderer.invoke('config:save', config),
@@ -76,6 +58,7 @@ const bridge = {
     startBidAnalysis: (payload) => ipcRenderer.invoke('tasks:start-bid-analysis', payload),
     startOutlineGeneration: (payload) => ipcRenderer.invoke('tasks:start-outline-generation', payload),
     startContentGeneration: (payload) => ipcRenderer.invoke('tasks:start-content-generation', payload),
+    continueContentGeneration: (payload) => ipcRenderer.invoke('tasks:continue-content-generation', payload),
     getActiveTasks: () => ipcRenderer.invoke('tasks:get-active'),
     onTaskEvent: (callback) => {
       ipcRenderer.send('tasks:subscribe');

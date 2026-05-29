@@ -5,7 +5,7 @@ export type BidAnalysisMode = 'key' | 'full';
 export type BidAnalysisTaskStatus = 'idle' | 'running' | 'success' | 'error';
 export type BackgroundTaskType = 'bid-analysis' | 'outline-generation' | 'content-generation';
 export type BackgroundTaskStatus = 'running' | 'success' | 'error';
-export type ContentGenerationSectionStatus = 'idle' | 'running' | 'success' | 'error';
+export type ContentGenerationSectionStatus = 'idle' | 'running' | 'success' | 'error' | 'partial';
 export type ContentTableRequirement = 'none' | 'light' | 'moderate' | 'heavy';
 
 export interface ContentGenerationOptions {

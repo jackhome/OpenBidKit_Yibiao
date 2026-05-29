@@ -68,7 +68,6 @@ if (typeof globalThis.DOMMatrix === 'undefined') {
 }
 
 const { registerIpcHandlers } = require('./ipc/index.cjs');
-const { setupAutoUpdate, triggerUpdateDownload, quitAndInstall } = require('./services/updateService.cjs');
 const { getGeneratedImagesDir } = require('./utils/paths.cjs');
 
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -147,8 +146,7 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = 'light';
   registerAssetProtocol();
   const mainWindow = createMainWindow();
-  registerIpcHandlers({ app, mainWindow, triggerUpdateDownload, quitAndInstall });
-  setupAutoUpdate({ app, mainWindow });
+  registerIpcHandlers({ app, mainWindow });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

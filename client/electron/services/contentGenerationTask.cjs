@@ -464,7 +464,7 @@ function formatKnowledgeContentsForPrompt(contents) {
     .join('\n\n');
 }
 
-function buildChapterContentMessages({ chapter, parentChapters, siblingChapters, projectOverview, regenerateRequirement, contentPlan, knowledgeContents }) {
+function buildChapterContentMessages({ chapter, parentChapters, siblingChapters, projectOverview, regenerateRequirement, contentPlan, knowledgeContents, targetTotalWords }) {
   const chapterId = chapter.id || 'unknown';
   const chapterTitle = chapter.title || '未命名章节';
   const chapterDescription = chapter.description || '';
@@ -473,11 +473,13 @@ function buildChapterContentMessages({ chapter, parentChapters, siblingChapters,
       role: 'system',
       content: `你是一个专业的标书编写专家，负责为投标文件的技术标部分生成具体内容。
 
+【关键规则】严禁在正文前输出任何思考过程、分析步骤、写作计划或对任务要求的复述。直接开始写正文。
+
 要求：
 1. 内容要专业、准确，与章节标题和描述保持一致。
 2. 这是技术方案，不是宣传报告，注意朴实无华，不要假大空。
-3. 语言要正式、规范，符合标书写作要求，但不要使用奇怪的连接词，不要让人觉得内容像是 AI 生成的。
-4. 内容要详细具体，避免空泛的描述。
+3. 写作风格专业、正式、技术化，用数据和事实支撑论点。
+4. 严格按分配的篇幅写作，不要超出字数限制。
 5. 注意避免与同级章节内容重复，保持内容的独特性和互补性。
 6. 可以使用 Markdown 段落、列表和表格；表格必须服务于内容表达，不要为了形式硬插。
 7. 正文只生成文字、列表、表格等内容，配图由系统另行处理。
@@ -547,6 +549,7 @@ function buildChapterContentMessages({ chapter, parentChapters, siblingChapters,
 章节描述: ${chapterDescription}
 
 请根据项目概述信息和上述章节层级关系，生成详细的专业内容，确保与上级章节的内容逻辑相承，同时避免与同级章节内容重复，突出本章节的独特性和技术方案优势。
+${targetTotalWords ? `【篇幅控制】全文目标字数：约 ${targetTotalWords} 字，当前章节按整体比例分配篇幅，请据此控制长度。` : ''}
 直接返回编写的正文内容，不要输出标题、解释、总结等任何其他内容`,
   });
 
@@ -683,6 +686,20 @@ function unwrapMarkdownTitle(line) {
   normalized = normalized.replace(/^\*\*(.+)\*\*$/, '$1').trim();
   normalized = normalized.replace(/^__(.+)__$/, '$1').trim();
   return normalized.replace(/[：:：。\s]+$/, '').trim();
+}
+
+function stripLeadingThinking(content) {
+  const text = String(content || '').trim();
+  const lines = text.split(/\n/);
+  let cutIndex = 0;
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const isThinking = /^(用户[要求需]|让我[分析思考]|根据要求|项目背景|章节上下文|同级章节|当前章节|这是一个|这需要|我需要|我要为|好的[，,]|好的[，,]?我)/.test(line);
+    if (!isThinking && cutIndex > 0) break;
+    if (isThinking) cutIndex = i + 1;
+  }
+  return cutIndex > 0 ? lines.slice(cutIndex).join('\n').trim() : text;
 }
 
 function stripRepeatedChapterTitle(content, chapter) {
@@ -969,6 +986,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
   const generationOptions = payload.generationOptions || payload.generation_options || {};
   const realTimeRender = payload.real_time_render !== false && payload.realTimeRender !== false;
   const tableRequirement = normalizeTableRequirement(generationOptions.tableRequirement ?? generationOptions.table_requirement);
+  const targetTotalWords = Math.max(0, Number(generationOptions.targetTotalWords ?? generationOptions.target_total_words ?? 0)) || 0;
   const maxTables = maxTablesForRequirement(tableRequirement, leaves.length);
   const referenceKnowledgeDocumentIds = normalizeReferenceDocumentIds(payload, storedPlan);
   const imageAvailability = aiService.getImageModelAvailability
@@ -1247,7 +1265,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
     const previousContent = previousSection.content || item.content || '';
     const isSingleSectionRegeneration = Boolean(targetItemId);
     let rawContent = regenerate ? '' : previousContent;
-    let content = stripRepeatedChapterTitle(normalizeGeneratedMarkdown(rawContent), item);
+    let content = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
     logs = [...logs, `开始生成：${item.id} ${item.title || '未命名章节'}`];
     saveSection(item, {
       status: 'running',
@@ -1260,20 +1278,20 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
       const knowledgeContents = resolveKnowledgeContents(contentPlan.knowledge?.item_ids, knowledgeContentMap);
 
       await aiService.streamChat({
-        messages: buildChapterContentMessages({ chapter: item, parentChapters, siblingChapters, projectOverview, regenerateRequirement, contentPlan, knowledgeContents }),
+        messages: buildChapterContentMessages({ chapter: item, parentChapters, siblingChapters, projectOverview, regenerateRequirement, contentPlan, knowledgeContents, targetTotalWords }),
         temperature: 0.7,
       }, (event) => {
         if (event.type !== 'chunk' || !event.chunk) {
           return;
         }
         rawContent += event.chunk;
-        content = stripRepeatedChapterTitle(normalizeGeneratedMarkdown(rawContent), item);
+        content = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
         if (realTimeRender && !isSingleSectionRegeneration) {
           saveSection(item, { status: 'running', content, error: undefined }, content);
         }
       });
 
-      content = stripRepeatedChapterTitle(normalizeGeneratedMarkdown(rawContent), item);
+      content = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
       logs = [...logs, `生成完成：${item.id} ${item.title || '未命名章节'}`];
       saveSection(item, { status: 'success', content, error: undefined }, content, { logs });
     } catch (error) {
@@ -1418,4 +1436,176 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
   updateTask({ status: finalStatus, progress: finalProgress, logs, stats: statsSnapshot() }, technicalPlan);
 }
 
-module.exports = { runContentGenerationTask, stripRepeatedChapterTitle };
+module.exports = { runContentGenerationTask, stripRepeatedChapterTitle, runContinueContentGeneration };
+
+// 单独章节继续生成
+async function runContinueContentGeneration({ aiService, workspaceStore, knowledgeBaseService, updateTask, payload }) {
+  const storedPlan = workspaceStore.loadTechnicalPlan() || {};
+  const targetItemId = String(payload?.targetItemId || payload?.target_item_id || '').trim();
+  if (!targetItemId) {
+    throw new Error('未指定要继续生成的章节');
+  }
+
+  const outlineData = storedPlan.outlineData;
+  if (!outlineData?.outline?.length) {
+    throw new Error('无目录数据');
+  }
+
+  const leaves = collectLeafContexts(outlineData.outline);
+  const context = leaves.find(({ item }) => item.id === targetItemId);
+  if (!context) {
+    throw new Error('未找到章节：' + targetItemId);
+  }
+
+  const { item, parentChapters, siblingChapters } = context;
+  const section = (storedPlan.contentGenerationSections || {})[targetItemId] || {};
+  const existingContent = section.content || item.content || '';
+  if (!String(existingContent).trim()) {
+    throw new Error('当前章节无内容，无法继续生成，请使用重新生成');
+  }
+
+  const projectOverview = storedPlan.projectOverview || '';
+  const contentPlan = normalizeContentPlan((storedPlan.contentGenerationPlans || {})[targetItemId]);
+  const knowledgeItems = loadContentKnowledgeItems(knowledgeBaseService, storedPlan.referenceKnowledgeDocumentIds || [], () => {});
+  const knowledgeContentMap = loadContentKnowledgeContentMap(knowledgeBaseService, storedPlan.referenceKnowledgeDocumentIds || [], () => {});
+  const knowledgeContents = resolveKnowledgeContents(contentPlan.knowledge?.item_ids, knowledgeContentMap);
+
+  let sections = { ...(storedPlan.contentGenerationSections || {}) };
+  let logs = [`继续生成章节：${item.id} ${item.title || '未命名章节'}`];
+
+  function saveSectionStatus(content, status, error) {
+    sections = { ...sections, [targetItemId]: { id: targetItemId, title: item.title, status, content, error } };
+    const currentOutlineData = storedPlan.outlineData || {};
+    const nextOutlineData = {
+      ...currentOutlineData,
+      outline: updateOutlineItemContent(currentOutlineData.outline || [], targetItemId, content),
+    };
+    const saved = workspaceStore.updateTechnicalPlan({
+      contentGenerationSections: sections,
+      outlineData: nextOutlineData,
+    });
+    updateTask({ status: 'running', logs }, saved);
+    return saved;
+  }
+
+  saveSectionStatus(existingContent, 'running', undefined);
+
+  const continueMessages = buildContinueChapterContentMessages({
+    chapter: item,
+    parentChapters,
+    siblingChapters,
+    projectOverview,
+    contentPlan,
+    knowledgeContents,
+    existingContent,
+  });
+
+  let rawContent = existingContent;
+
+  try {
+    await aiService.streamChat({
+      messages: continueMessages,
+      temperature: 0.7,
+    }, (event) => {
+      if (event.type !== 'chunk' || !event.chunk) {
+        return;
+      }
+      rawContent += event.chunk;
+      const processed = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
+      saveSectionStatus(processed, 'running', undefined);
+    });
+
+    const finalContent = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
+    logs = [...logs, `继续生成完成：${item.id} ${item.title || '未命名章节'}`];
+    saveSectionStatus(finalContent, 'success', undefined);
+    updateTask({ status: 'success', logs }, workspaceStore.loadTechnicalPlan());
+  } catch (error) {
+    const message = error.message || '继续生成失败';
+    logs = [...logs, `继续生成失败：${item.id} ${item.title || '未命名章节'}，${message}`];
+    saveSectionStatus(rawContent, 'error', message);
+    updateTask({ status: 'error', logs }, workspaceStore.loadTechnicalPlan());
+  }
+}
+
+function buildContinueChapterContentMessages({ chapter, parentChapters, siblingChapters, projectOverview, contentPlan, knowledgeContents, existingContent }) {
+  const chapterId = chapter.id || 'unknown';
+  const chapterTitle = chapter.title || '未命名章节';
+  const chapterDescription = chapter.description || '';
+  const messages = [
+    {
+      role: 'system',
+      content: `你是一个专业的标书编写专家，负责为投标文件的技术标部分续写正文内容。
+
+【关键规则】严禁在正文前输出任何思考过程、分析步骤或对任务要求的复述。直接开始写正文。
+
+要求：
+1. 内容要专业、准确，与章节标题和描述保持一致。
+2. 这是技术方案，不是宣传报告，注意朴实无华，不要假大空。
+3. 写作风格专业、正式、技术化，用数据和事实支撑论点。
+4. 严格按分配的篇幅写作，不要超出字数限制。
+5. 注意避免与同级章节内容重复，保持内容的独特性和互补性。
+6. 可以使用 Markdown 段落、列表和表格；表格必须服务于内容表达，不要为了形式硬插。
+7. 严禁输出 Mermaid、PlantUML、Graphviz、flowchart、graph、sequenceDiagram 等图表代码块、mermaid.ink 链接或图片 Markdown；配图由系统另行处理。
+8. 直接返回续写内容，不要输出任何解释或说明。`,
+    },
+  ];
+
+  if (String(projectOverview || '').trim()) {
+    messages.push({ role: 'user', content: `项目概述信息：\n${projectOverview}` });
+  }
+
+  if (knowledgeContents?.length) {
+    messages.push({
+      role: 'user',
+      content: '参考正文素材使用规则：以下内容只作为可吸收的技术素材。请改写为当前项目语境下的投标技术方案正文，不要照抄，不要提到"知识库""历史文档""参考资料"或素材来源。',
+    });
+    messages.push({
+      role: 'user',
+      content: `参考正文素材：\n${formatKnowledgeContentsForPrompt(knowledgeContents)}`,
+    });
+  }
+
+  if (parentChapters?.length) {
+    const parentLines = ['上级章节信息：'];
+    for (const parent of parentChapters) {
+      parentLines.push(`- ${parent.id || 'unknown'} ${parent.title || '未命名章节'}\n  ${parent.description || ''}`);
+    }
+    messages.push({ role: 'user', content: parentLines.join('\n') });
+  }
+
+  if (siblingChapters?.length) {
+    const siblingLines = ['同级章节信息（请避免内容重复）：'];
+    for (const sibling of siblingChapters) {
+      if (sibling.id === chapterId) {
+        continue;
+      }
+      siblingLines.push(`- ${sibling.id || 'unknown'} ${sibling.title || '未命名章节'}\n  ${sibling.description || ''}`);
+    }
+    if (siblingLines.length > 1) {
+      messages.push({ role: 'user', content: siblingLines.join('\n') });
+    }
+  }
+
+  if (contentPlan) {
+    messages.push({
+      role: 'user',
+      content: `正文编排决策：\n${formatContentPlanForPrompt(contentPlan)}`,
+    });
+  }
+
+  const continuePrompt = `请为以下标书章节继续生成正文内容。当前章节已有部分内容但未完成，请从结尾处继续续写，不要重复之前的内容。
+
+当前章节信息：
+章节ID: ${chapterId}
+章节标题: ${chapterTitle}
+章节描述: ${chapterDescription}
+
+【已有内容（请从结尾处继续，不要重复）】：
+${existingContent}
+
+请继续生成上述章节的正文内容，保持与已有内容在语气、风格、深度上的一致性。不要输出标题、解释、总结等任何其他内容。`;
+
+  messages.push({ role: 'user', content: continuePrompt });
+
+  return messages;
+}
