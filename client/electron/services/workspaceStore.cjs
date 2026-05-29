@@ -40,6 +40,18 @@ function createWorkspaceStore(app) {
       return next;
     },
 
+    updateTechnicalPlanAsync(partial) {
+      return Promise.resolve().then(() => {
+        const prev = this.loadTechnicalPlan() || {};
+        const next = { ...prev, ...partial };
+        const dir = path.dirname(technicalPlanFile);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        return fs.promises.writeFile(technicalPlanFile, JSON.stringify(next, null, 2), 'utf-8').then(() => next);
+      });
+    },
+
     clearTechnicalPlan() {
       try {
         if (fs.existsSync(technicalPlanFile)) {

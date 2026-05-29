@@ -7,7 +7,7 @@ import ContentEditPage from './ContentEditPage';
 import { useTechnicalPlanWorkflow } from '../hooks/useTechnicalPlanWorkflow';
 import { trackPageView } from '../../../shared/analytics/analytics';
 import { FloatingToolbar, ToolbarArrowLeftIcon, ToolbarArrowRightIcon, ToolbarDocumentIcon, useToast } from '../../../shared/ui';
-import type { BackgroundTaskState, ContentGenerationOptions, TechnicalPlanStep } from '../types';
+import type { BackgroundTaskState, ContentGenerationOptions, ContentGenerationPlanState, ContentGenerationSectionState, TechnicalPlanStep } from '../types';
 import type { OutlineData, OutlineItem, WordExportProgressEvent } from '../../../shared/types';
 
 const steps: TechnicalPlanStep[] = [
@@ -94,6 +94,56 @@ function clearOutlineContent(items: OutlineItem[]): OutlineItem[] {
     const { content: _content, children, ...rest } = item;
     return children?.length ? { ...rest, children: clearOutlineContent(children) } : rest;
   });
+}
+
+function countItemDepth(items: OutlineItem[], targetId: string, depth = 0): number {
+  for (const item of items) {
+    if (item.id === targetId) return depth;
+    if (item.children?.length) {
+      const found = countItemDepth(item.children, targetId, depth + 1);
+      if (found >= 0) return found;
+    }
+  }
+  return -1;
+}
+
+function preserveContentForOutlineChange(
+  prevSections: Record<string, ContentGenerationSectionState>,
+  prevPlans: Record<string, ContentGenerationPlanState>,
+  oldOutline: OutlineItem[],
+  newOutline: OutlineItem[],
+): { sections: Record<string, ContentGenerationSectionState>; plans: Record<string, ContentGenerationPlanState> } {
+  const newSections: Record<string, ContentGenerationSectionState> = {};
+  const newPlans: Record<string, ContentGenerationPlanState> = {};
+  const oldLeaves = collectLeafItems(oldOutline);
+  const newLeaves = collectLeafItems(newOutline);
+
+  // Build old index by title+depth for matching
+  const oldByKey = new Map<string, OutlineItem>();
+  for (const leaf of oldLeaves) {
+    const depth = countItemDepth(oldOutline, leaf.id);
+    const key = `${leaf.title}::${depth}`;
+    if (!oldByKey.has(key)) oldByKey.set(key, leaf);
+  }
+
+  // Match new leaves to old leaves
+  for (const leaf of newLeaves) {
+    const depth = countItemDepth(newOutline, leaf.id);
+    const key = `${leaf.title}::${depth}`;
+    const oldLeaf = oldByKey.get(key);
+    if (oldLeaf) {
+      const oldSection = prevSections[oldLeaf.id];
+      if (oldSection && oldSection.content?.trim()) {
+        newSections[leaf.id] = { ...oldSection, id: leaf.id };
+      }
+      const oldPlan = prevPlans[oldLeaf.id];
+      if (oldPlan) {
+        newPlans[leaf.id] = oldPlan;
+      }
+    }
+  }
+
+  return { sections: newSections, plans: newPlans };
 }
 
 function updateOutlineItemContent(items: OutlineItem[], itemId: string, content: string): OutlineItem[] {
@@ -492,13 +542,22 @@ function TechnicalPlanHome() {
           task={state.outlineGenerationTask}
           onOutlineModeChange={(outlineMode) => setState((prev) => ({ ...prev, outlineMode }))}
           onReferenceKnowledgeDocumentsChange={(referenceKnowledgeDocumentIds) => setState((prev) => ({ ...prev, referenceKnowledgeDocumentIds }))}
-          onOutlineGenerated={(outlineData) => setState((prev) => ({
-            ...prev,
-            outlineData: resetGeneratedContent(outlineData),
-            contentGenerationTask: undefined,
-            contentGenerationSections: {},
-            contentGenerationPlans: {},
-          }))}
+          onOutlineGenerated={(outlineData) => setState((prev) => {
+            const { sections: preservedSections, plans: preservedPlans } = preserveContentForOutlineChange(
+              prev.contentGenerationSections,
+              prev.contentGenerationPlans,
+              prev.outlineData?.outline || [],
+              outlineData.outline || [],
+            );
+            const hasPreservedContent = Object.keys(preservedSections).length > 0;
+            return {
+              ...prev,
+              outlineData: hasPreservedContent ? outlineData : resetGeneratedContent(outlineData),
+              contentGenerationTask: hasPreservedContent ? prev.contentGenerationTask : undefined,
+              contentGenerationSections: preservedSections,
+              contentGenerationPlans: preservedPlans,
+            };
+          })}
         />
       )}
       {state.step === 'content-edit' && (

@@ -1080,21 +1080,49 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
     return;
   }
 
+  // 流式写入节流：300ms 内合并多次写入，避免 UI 卡死
+  let _flushTimer = null;
   function saveSection(item, partial, contentForOutline, taskPartial = {}) {
-    const prev = workspaceStore.loadTechnicalPlan() || {};
-    sections = withSection(prev.contentGenerationSections || sections, item, partial);
-    const currentOutlineData = prev.outlineData || outlineData;
+    sections = withSection(sections, item, partial);
     const outlineContent = contentForOutline ?? (sections[item.id].content || '');
-    const nextOutlineData = {
-      ...currentOutlineData,
-      outline: updateOutlineItemContent(currentOutlineData.outline || outlineData.outline, item.id, outlineContent),
+    outlineData = {
+      ...outlineData,
+      outline: updateOutlineItemContent(outlineData.outline || outlineData.outline, item.id, outlineContent),
+    };
+    updateTask({ status: 'running', progress: progressFor(leaves, sections), stats: statsSnapshot(), ...taskPartial });
+    if (!_flushTimer) {
+      _flushTimer = setTimeout(flushSections, 300);
+    }
+  }
+
+  function flushSections() {
+    _flushTimer = null;
+    workspaceStore.updateTechnicalPlanAsync({
+      contentGenerationSections: sections,
+      outlineData,
+    }).then((saved) => {
+      updateTask({ status: 'running', progress: progressFor(leaves, sections), logs, stats: statsSnapshot() }, saved);
+    }).catch(() => {
+      // 异步写入失败静默处理，下次 flush 重试
+    });
+  }
+
+  function saveSectionImmediate(item, partial, contentForOutline, taskPartial = {}) {
+    if (_flushTimer) {
+      clearTimeout(_flushTimer);
+      _flushTimer = null;
+    }
+    sections = withSection(sections, item, partial);
+    const outlineContent = contentForOutline ?? (sections[item.id].content || '');
+    outlineData = {
+      ...outlineData,
+      outline: updateOutlineItemContent(outlineData.outline || outlineData.outline, item.id, outlineContent),
     };
     const saved = workspaceStore.updateTechnicalPlan({
       contentGenerationSections: sections,
-      outlineData: nextOutlineData,
+      outlineData,
     });
-    updateTask({ status: 'running', progress: progressFor(leaves, sections), stats: statsSnapshot(), ...taskPartial }, saved);
-    return saved;
+    updateTask({ status: 'running', progress: progressFor(leaves, sections), logs, stats: statsSnapshot(), ...taskPartial }, saved);
   }
 
   function illustrationTypeForSinglePlan(contentPlan) {
@@ -1267,7 +1295,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
     let rawContent = regenerate ? '' : previousContent;
     let content = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
     logs = [...logs, `开始生成：${item.id} ${item.title || '未命名章节'}`];
-    saveSection(item, {
+    saveSectionImmediate(item, {
       status: 'running',
       content: isSingleSectionRegeneration ? previousContent : content,
       error: undefined,
@@ -1293,11 +1321,11 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
 
       content = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
       logs = [...logs, `生成完成：${item.id} ${item.title || '未命名章节'}`];
-      saveSection(item, { status: 'success', content, error: undefined }, content, { logs });
+      saveSectionImmediate(item, { status: 'success', content, error: undefined }, content, { logs });
     } catch (error) {
       const message = error.message || '正文生成失败';
       logs = [...logs, `生成失败：${item.id} ${item.title || '未命名章节'}，${message}${isSingleSectionRegeneration ? '。已保留原正文。' : ''}`];
-      saveSection(item, {
+      saveSectionImmediate(item, {
         status: 'error',
         content: isSingleSectionRegeneration ? previousContent : content,
         error: message,
@@ -1339,7 +1367,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
       imageStats.ai.success += 1;
       contentStats.illustration_completed += 1;
       logs = [...logs, `AI 配图完成：${item.id} ${contentPlan.image.title}`];
-      saveSection(item, { status: 'success', content, error: undefined }, content, { logs });
+      saveSectionImmediate(item, { status: 'success', content, error: undefined }, content, { logs });
     } catch (imageError) {
       imageStats.ai.failed += 1;
       contentStats.illustration_completed += 1;
@@ -1379,7 +1407,7 @@ async function runContentGenerationTask({ aiService, workspaceStore, knowledgeBa
       logs = [...logs, mermaidResult.attempts > 0
         ? `Mermaid 配图已修复并完成：${item.id} ${mermaidResult.plan.title}（修复 ${mermaidResult.attempts} 轮）`
         : `Mermaid 配图完成：${item.id} ${mermaidResult.plan.title}`];
-      saveSection(item, { status: 'success', content, error: undefined }, content, { logs });
+      saveSectionImmediate(item, { status: 'success', content, error: undefined }, content, { logs });
     } else {
       imageStats.mermaid.failed += 1;
       contentStats.illustration_completed += 1;
@@ -1446,12 +1474,11 @@ async function runContinueContentGeneration({ aiService, workspaceStore, knowled
     throw new Error('未指定要继续生成的章节');
   }
 
-  const outlineData = storedPlan.outlineData;
-  if (!outlineData?.outline?.length) {
+  if (!storedPlan.outlineData?.outline?.length) {
     throw new Error('无目录数据');
   }
 
-  const leaves = collectLeafContexts(outlineData.outline);
+  const leaves = collectLeafContexts(storedPlan.outlineData.outline);
   const context = leaves.find(({ item }) => item.id === targetItemId);
   if (!context) {
     throw new Error('未找到章节：' + targetItemId);
@@ -1472,23 +1499,45 @@ async function runContinueContentGeneration({ aiService, workspaceStore, knowled
 
   let sections = { ...(storedPlan.contentGenerationSections || {}) };
   let logs = [`继续生成章节：${item.id} ${item.title || '未命名章节'}`];
+  let outlineData = storedPlan.outlineData || {};
 
-  function saveSectionStatus(content, status, error) {
+  let _flushTimer = null;
+  function saveSectionIncremental(content, status, error) {
     sections = { ...sections, [targetItemId]: { id: targetItemId, title: item.title, status, content, error } };
-    const currentOutlineData = storedPlan.outlineData || {};
-    const nextOutlineData = {
-      ...currentOutlineData,
-      outline: updateOutlineItemContent(currentOutlineData.outline || [], targetItemId, content),
+    outlineData = {
+      ...outlineData,
+      outline: updateOutlineItemContent(outlineData.outline || [], targetItemId, content),
+    };
+    if (!_flushTimer) {
+      _flushTimer = setTimeout(() => {
+        _flushTimer = null;
+        const saved = workspaceStore.updateTechnicalPlan({
+          contentGenerationSections: sections,
+          outlineData,
+        });
+        updateTask({ status: 'running', logs }, saved);
+      }, 300);
+    }
+  }
+
+  function saveSectionImmediate(content, status, error) {
+    if (_flushTimer) {
+      clearTimeout(_flushTimer);
+      _flushTimer = null;
+    }
+    sections = { ...sections, [targetItemId]: { id: targetItemId, title: item.title, status, content, error } };
+    outlineData = {
+      ...outlineData,
+      outline: updateOutlineItemContent(outlineData.outline || [], targetItemId, content),
     };
     const saved = workspaceStore.updateTechnicalPlan({
       contentGenerationSections: sections,
-      outlineData: nextOutlineData,
+      outlineData,
     });
     updateTask({ status: 'running', logs }, saved);
-    return saved;
   }
 
-  saveSectionStatus(existingContent, 'running', undefined);
+  saveSectionImmediate(existingContent, 'running', undefined);
 
   const continueMessages = buildContinueChapterContentMessages({
     chapter: item,
@@ -1512,17 +1561,17 @@ async function runContinueContentGeneration({ aiService, workspaceStore, knowled
       }
       rawContent += event.chunk;
       const processed = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
-      saveSectionStatus(processed, 'running', undefined);
+      saveSectionIncremental(processed, 'running', undefined);
     });
 
     const finalContent = stripRepeatedChapterTitle(stripLeadingThinking(normalizeGeneratedMarkdown(rawContent)), item);
     logs = [...logs, `继续生成完成：${item.id} ${item.title || '未命名章节'}`];
-    saveSectionStatus(finalContent, 'success', undefined);
+    saveSectionImmediate(finalContent, 'success', undefined);
     updateTask({ status: 'success', logs }, workspaceStore.loadTechnicalPlan());
   } catch (error) {
     const message = error.message || '继续生成失败';
     logs = [...logs, `继续生成失败：${item.id} ${item.title || '未命名章节'}，${message}`];
-    saveSectionStatus(rawContent, 'error', message);
+    saveSectionImmediate(rawContent, 'error', message);
     updateTask({ status: 'error', logs }, workspaceStore.loadTechnicalPlan());
   }
 }
